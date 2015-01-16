@@ -11,7 +11,6 @@ import os
 os.umask(022)
 
 # stdlib
-import httplib as http_client
 import logging
 import optparse
 import re
@@ -25,13 +24,14 @@ import threading
 from urllib import urlencode
 
 # project
-from aggregator import MetricsBucketAggregator
+from aggregator import MetricsBucketAggregator, get_formatter
 from checks.check_status import DogstatsdStatus
 from config import get_config
 from daemon import Daemon, AgentSupervisor
 from util import PidFile, get_hostname, plural, get_uuid, chunks
 
 # 3rd party
+import requests
 import simplejson as json
 
 log = logging.getLogger('dogstatsd')
@@ -86,15 +86,6 @@ class Reporter(threading.Thread):
         self.api_key = api_key
         self.api_host = api_host
         self.event_chunk_size = event_chunk_size or EVENT_CHUNK_SIZE
-
-        self.http_conn_cls = http_client.HTTPSConnection
-
-        match = re.match('^(https?)://(.*)', api_host)
-
-        if match:
-            self.api_host = match.group(2)
-            if match.group(1) == 'http':
-                self.http_conn_cls = http_client.HTTPConnection
 
     def stop(self):
         log.info("Stopping reporter")
@@ -168,38 +159,15 @@ class Reporter(threading.Thread):
                 log.exception("Error flushing metrics")
 
     def submit(self, metrics):
-        # Copy and pasted from dogapi, because it's a bit of a pain to distribute python
-        # dependencies with the agent.
         body, headers = serialize_metrics(metrics)
-        method = 'POST'
-
         params = {}
         if self.api_key:
             params['api_key'] = self.api_key
-        url = '/api/v1/series?%s' % urlencode(params)
-
-        start_time = time()
-        status = None
-        conn = self.http_conn_cls(self.api_host)
-        try:
-            conn.request(method, url, body, headers)
-
-            #FIXME: add timeout handling code here
-
-            response = conn.getresponse()
-            status = response.status
-            response.close()
-        finally:
-            conn.close()
-        duration = round((time() - start_time) * 1000.0, 4)
-        log.debug("%s %s %s%s (%sms)" % (
-                        status, method, self.api_host, url, duration))
-        return duration
+        url = '%s/api/v1/series?%s' % (self.api_host, urlencode(params))
+        self.submit_http(url, body, headers)
 
     def submit_events(self, events):
         headers = {'Content-Type':'application/json'}
-        method = 'POST'
-
         events_len = len(events)
         event_chunk_size = self.event_chunk_size
 
@@ -215,23 +183,38 @@ class Reporter(threading.Thread):
             params = {}
             if self.api_key:
                 params['api_key'] = self.api_key
-            url = '/intake?%s' % urlencode(params)
+            url = '%s/intake?%s' % (self.api_host, urlencode(params))
 
-            status = None
-            conn = self.http_conn_cls(self.api_host)
+            self.submit_http(url, payload, headers)            
+
+    def submit_http(self, url, data, headers):
+        no_proxy = {
+        # See https://github.com/kennethreitz/requests/issues/879
+        # and https://github.com/DataDog/dd-agent/issues/1112
+            'no': 'pass',
+        }
+        log.debug("Posting payload to %s" % url)
+        try:
+            start_time = time()
+            r = requests.post(url, data=data, timeout=5,
+                headers=headers, proxies=no_proxy)
+
+            r.raise_for_status()
+
+            if r.status_code >= 200 and r.status_code < 205:
+                log.debug("Payload accepted")
+
+            status = r.status_code
+            duration = round((time() - start_time) * 1000.0, 4)
+            log.debug("%s POST %s (%sms)" % (
+                            status, url, duration))
+        except Exception:
+            log.exception("Unable to post payload.")
             try:
-                start_time = time()
-                conn.request(method, url, json.dumps(payload), headers)
+                log.error("Received status code: {0}".format(r.status_code))
+            except Exception:
+                pass
 
-                response = conn.getresponse()
-                status = response.status
-                response.close()
-                duration = round((time() - start_time) * 1000.0, 4)
-                log.debug("%s %s %s%s (%sms)" % (
-                                status, method, self.api_host, url, duration))
-
-            finally:
-                conn.close()
 
     def submit_service_checks(self, service_checks):
         headers = {'Content-Type':'application/json'}
@@ -419,7 +402,12 @@ def init(config_path=None, use_watchdog=False, use_forwarder=False, args=None):
     # server and reporting threads.
     assert 0 < interval
 
-    aggregator = MetricsBucketAggregator(hostname, aggregator_interval, recent_point_threshold=recent_point_threshold)
+    aggregator = MetricsBucketAggregator(
+        hostname,
+        aggregator_interval,
+        recent_point_threshold=recent_point_threshold,
+        formatter = get_formatter(c)
+        )
 
     # Start the reporting thread.
     reporter = Reporter(interval, aggregator, target, api_key, use_watchdog, event_chunk_size)
