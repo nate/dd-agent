@@ -185,7 +185,7 @@ class Reporter(threading.Thread):
                 params['api_key'] = self.api_key
             url = '%s/intake?%s' % (self.api_host, urlencode(params))
 
-            self.submit_http(url, payload, headers)            
+            self.submit_http(url, payload, headers)
 
     def submit_http(self, url, data, headers):
         no_proxy = {
@@ -218,28 +218,13 @@ class Reporter(threading.Thread):
 
     def submit_service_checks(self, service_checks):
         headers = {'Content-Type':'application/json'}
-        method = 'POST'
 
         params = {}
         if self.api_key:
             params['api_key'] = self.api_key
 
-        url = '/api/v1/check_run?{0}'.format(urlencode(params))
-
-        status = None
-        conn = self.http_conn_cls(self.api_host)
-        try:
-            start_time = time()
-            conn.request(method, url, json.dumps(service_checks), headers)
-
-            response = conn.getresponse()
-            status = response.status
-            response.close()
-            duration = round((time() - start_time) * 1000.0, 4)
-            log.debug("{0} {1} {2}{3} ({4}ms)".format(
-                            status, method, self.api_host, url, duration))
-        finally:
-            conn.close()
+        url = '{0}/api/v1/check_run?{1}'.format(self.api_host, urlencode(params))
+        self.submit_http(url, json.dumps(service_checks), headers)
 
 class Server(object):
     """
