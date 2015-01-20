@@ -473,7 +473,7 @@ class Aggregator(object):
             # Event syntax:
             # _e{5,4}:title|body|meta
             name = name_and_metadata[0]
-            metadata = unicode(name_and_metadata[1])
+            metadata = name_and_metadata[1]
             title_length, text_length = name.split(',')
             title_length = int(title_length[3:])
             text_length = int(text_length[:-1])
@@ -529,7 +529,6 @@ class Aggregator(object):
             if not meta:
                 return service_check
 
-            meta = unicode(meta)
             for m in meta.split('|'):
                 if m[0] == u'd':
                     service_check['timestamp'] = float(m[2:])
@@ -543,27 +542,35 @@ class Aggregator(object):
         except IndexError, ValueError:
             raise Exception(u'Unparseable service check packet: %s' % packet)
 
-    def submit_packets(self, packets):
-        for packet in packets.splitlines():
+    def submit_packets(self, packets, decoded=False):
+        try:
+            for packet in packets.splitlines():
+                if not packet.strip():
+                    continue
 
-            if not packet.strip():
-                continue
-
-            if packet.startswith('_e'):
-                self.event_count += 1
-                event = self.parse_event_packet(packet)
-                self.event(**event)
-            elif packet.startswith('_sc'):
-                self.service_check_count += 1
-                service_check = self.parse_sc_packet(packet)
-                self.service_check(**service_check)
-            else:
-                self.count += 1
-                parsed_packets = self.parse_metric_packet(packet)
-                for name, value, mtype, tags, sample_rate in parsed_packets:
-                    hostname, device_name, tags = self._extract_magic_tags(tags)
-                    self.submit_metric(name, value, mtype, tags=tags, hostname=hostname,
-                        device_name=device_name, sample_rate=sample_rate)
+                if packet.startswith('_e'):
+                    self.event_count += 1
+                    event = self.parse_event_packet(packet)
+                    self.event(**event)
+                elif packet.startswith('_sc'):
+                    self.service_check_count += 1
+                    service_check = self.parse_sc_packet(packet)
+                    self.service_check(**service_check)
+                else:
+                    self.count += 1
+                    parsed_packets = self.parse_metric_packet(packet)
+                    for name, value, mtype, tags, sample_rate in parsed_packets:
+                        hostname, device_name, tags = self._extract_magic_tags(tags)
+                        self.submit_metric(name, value, mtype, tags=tags, hostname=hostname,
+                            device_name=device_name, sample_rate=sample_rate)
+        except UnicodeDecodeError:
+            # Avoid potential infinite recursion
+            if decoded:
+                raise
+            # We should probably consider that packets are always encoded
+            # in utf8, but decoding all packets has an perf overhead of 7%
+            # So we have a try-and-decode instead
+            self.submit_packets(unicode(packets, 'utf-8'), decoded=True)
 
     def _extract_magic_tags(self, tags):
         """Magic tags (host, device) override metric hostname and device_name attributes"""
@@ -890,18 +897,18 @@ def get_formatter(config):
   formatter = api_formatter
 
   if config['statsd_metric_namespace']:
-    def metric_namespace_formatter_wrapper(metric, value, timestamp, tags, 
+    def metric_namespace_formatter_wrapper(metric, value, timestamp, tags,
         hostname=None, device_name=None, metric_type=None, interval=None):
       metric_prefix = config['statsd_metric_namespace']
       if metric_prefix[-1] != '.':
         metric_prefix += '.'
 
-      return api_formatter(metric_prefix + metric, value, timestamp, tags, hostname, 
+      return api_formatter(metric_prefix + metric, value, timestamp, tags, hostname,
         device_name, metric_type, interval)
 
     formatter = metric_namespace_formatter_wrapper
   return formatter
-  
+
 
 def api_formatter(metric, value, timestamp, tags, hostname=None, device_name=None,
         metric_type=None, interval=None):
