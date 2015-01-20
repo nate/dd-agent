@@ -539,7 +539,7 @@ class Aggregator(object):
 
             return service_check
 
-        except IndexError, ValueError:
+        except (IndexError, ValueError):
             raise Exception(u'Unparseable service check packet: %s' % packet)
 
     def submit_packets(self, packets, decoded=False):
