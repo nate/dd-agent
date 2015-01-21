@@ -69,6 +69,7 @@ class AgentSupervisor(object):
             except OSError, e:
                 msg = "Agent fork failed: %d (%s)" % (e.errno, e.strerror)
                 logging.error(msg)
+                logging.error(traceback.format_exc())
                 sys.stderr.write(msg + "\n")
                 sys.exit(1)
 
